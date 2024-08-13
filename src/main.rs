@@ -4,7 +4,7 @@ use axum::{extract::{ws::{Message, WebSocket}, ConnectInfo, State, WebSocketUpgr
 use axum_extra::{headers::authorization::Basic, TypedHeader};
 use drillx::{Solution};
 use futures::{stream::SplitSink, SinkExt, StreamExt};
-use ore_api::state::Proof;
+use ore_api::{consts::BUS_COUNT, state::Proof};
 use ore_utils::{get_auth_ix, get_cutoff, get_mine_ix, get_proof, get_register_ix, ORE_TOKEN_DECIMALS};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{commitment_config::CommitmentConfig, compute_budget::ComputeBudgetInstruction, native_token::LAMPORTS_PER_SOL, signature::read_keypair_file, signer::Signer, transaction::Transaction};
@@ -249,27 +249,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let cu_limit_ix = ComputeBudgetInstruction::set_compute_unit_limit(480_000);
                     ixs.push(cu_limit_ix);
 
-                    let prio_fee_ix = ComputeBudgetInstruction::set_compute_unit_price(100_000);
-                    ixs.push(prio_fee_ix);
-
                     let noop_ix = get_auth_ix(signer.pubkey());
                     ixs.push(noop_ix);
 
                     // TODO: choose a bus
-                    let bus = 4;
+                    let bus = rand::thread_rng().gen_range(0..BUS_COUNT);
                     let difficulty = solution.to_hash().difficulty();
+
+                    let prio_fee = match difficulty {
+                        d if d <= 20 => 10000,
+                        d if d > 20 && d < 23 => 30000,
+                        _ => 60000,
+                    };
+
+                    let prio_fee_ix = ComputeBudgetInstruction::set_compute_unit_price(prio_fee);
+                    ixs.push(prio_fee_ix);
 
                     let ix_mine = get_mine_ix(signer.pubkey(), solution, bus);
                     ixs.push(ix_mine);
-                    info!("Starting mine submission attempts with difficulty {}.", difficulty);
+                    info!("Starting mine submission attempts with difficulty {}, fee {}", difficulty, prio_fee);
                     if let Ok((hash, _slot)) = rpc_client.get_latest_blockhash_with_commitment(rpc_client.commitment()).await {
                         let mut tx = Transaction::new_with_payer(&ixs, Some(&signer.pubkey()));
 
                         tx.sign(&[&signer], hash);
                         
                         for i in 0..3 {
-                            info!("Sending signed tx...");
-                            info!("attempt: {}", i + 1);
+                            info!("Sending signed tx... difficulty:{},  fee: {}", difficulty, prio_fee);
+                            info!("attempt: {} difficulty {}, fee: {}", i + 1, difficulty, prio_fee);
                             let sig = rpc_client.send_and_confirm_transaction(&tx).await;
                             if let Ok(sig) = sig {
                                 // success
@@ -284,7 +290,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             info!("New balance: {}", balance);
                                             let rewards = loaded_proof.balance - proof.balance;
                                             let rewards = (rewards as f64) / 10f64.powf(ORE_TOKEN_DECIMALS as f64);
-                                            info!("Earned: {} ORE", rewards);
+                                            info!("Earned: {} ORE, difficulty:{}, fee:{}", rewards, difficulty, prio_fee);
 
                                             let _ = mine_success_sender.send(MessageInternalMineSuccess {
                                                 difficulty,
@@ -318,7 +324,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             } else {
                                 // sent error
                                 if i >= 2 {
-                                    info!("Failed to send after 3 attempts. Discarding and refreshing data.");
+                                    info!(
+                                        "Failed to send after 3 attempts. Discarding and refreshing data. Difficulty: {}, fee: {}",
+                                        difficulty, prio_fee
+                                    );
                                     // reset nonce
                                     {
                                         let mut nonce = app_nonce.lock().await;
@@ -337,7 +346,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             tokio::time::sleep(Duration::from_millis(500)).await;
                         }
                     } else {
-                        error!("Failed to get latest blockhash. retrying...");
+                        error!("Failed to get latest blockhash, difficulty:{}, fee:{}. retrying...", difficulty, prio_fee);
                         tokio::time::sleep(Duration::from_millis(1000)).await;
                     }
                 }
