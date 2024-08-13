@@ -6,6 +6,7 @@ use drillx::{Solution};
 use futures::{stream::SplitSink, SinkExt, StreamExt};
 use ore_api::{consts::BUS_COUNT, state::Proof};
 use ore_utils::{get_auth_ix, get_cutoff, get_mine_ix, get_proof, get_register_ix, ORE_TOKEN_DECIMALS};
+use rand::Rng;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{commitment_config::CommitmentConfig, compute_budget::ComputeBudgetInstruction, native_token::LAMPORTS_PER_SOL, signature::read_keypair_file, signer::Signer, transaction::Transaction};
 use tokio::sync::{mpsc::{UnboundedReceiver, UnboundedSender}, Mutex, RwLock};
@@ -257,9 +258,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let difficulty = solution.to_hash().difficulty();
 
                     let prio_fee = match difficulty {
-                        d if d <= 20 => 10000,
-                        d if d > 20 && d < 23 => 30000,
-                        _ => 60000,
+                        d if d <= 20 => 20000,
+                        d if d > 20 && d < 23 => 40000,
+                        _ => 80000,
                     };
 
                     let prio_fee_ix = ComputeBudgetInstruction::set_compute_unit_price(prio_fee);
